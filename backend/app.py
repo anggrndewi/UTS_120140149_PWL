@@ -1,9 +1,10 @@
 from wsgiref.simple_server import make_server
-from wsgicors import CORS
 from pyramid.config import Configurator
 from pyramid.view import view_config
+from pyramid.authorization import ACLAuthorizationPolicy
 import pymysql
 import jwt
+import json
 import datetime
 
 # Koneksi ke database MySQL
@@ -11,176 +12,84 @@ connection = pymysql.connect(
     host='localhost',
     user='root',
     password='',
-    db='keranjangku',
+    db='uts_pwl',
     charset='utf8mb4',
     cursorclass=pymysql.cursors.DictCursor
 )
 
+# Route untuk read halaman belaja
+@view_config(route_name='product', renderer='json')
+def belanja(request):
+     with connection.cursor() as cursor:
+        sql = "SELECT * FROM product"
+        cursor.execute(sql)
+        data = cursor.fetchall()
+        return {'data': data}
 
-@view_config(route_name='index', renderer='json',  request_method="GET")
-def index(request):
-    return {
-        'message': 'Server Keranjangku Running!',
-        'description': 'Mari Berbelanja di Keranjangku!'
-    }
+# Route untuk create data
+@view_config(route_name='create-data', request_method='POST', renderer="json")
+def belaja_create(request):
+    # create data movies
+    
+        with connection.cursor() as cursor:
+            sql = "INSERT INTO movies (nama, harga, desk, id) VALUES (%s, %s, %s, %s)"
+            cursor.execute(sql, (request.POST['nama'], request.POST['harga'],
+                           request.POST['desk']))
+            connection.commit()
+        return {'message': 'ok', 'description': 'berhasil tambah data', 'data': [request.POST['nama'], request.POST['harga'], request.POST['desk']]}
+   
 
-# middleware auth
-def auth_jwt_verify(request):
-    # Check if the token is present in cookies
-    authentication_header = request.cookies.get('token')
-    if not authentication_header:
-        # If token is not in cookies, try to get it from local storage
-        authentication_header = request.headers.get('Authorization')
-        if authentication_header and authentication_header.startswith('Bearer '):
-            authentication_header = authentication_header.split(' ')[1]
-
-    if authentication_header:
-        try:
-            decoded_user = jwt.decode(
-                authentication_header, 'secret', algorithms=['HS256'])
-            with connection.cursor() as cursor:
-                sql = "SELECT jwt_token FROM tokens WHERE user_id=%s"
-                cursor.execute(sql, (decoded_user['sub'],))
-                result = cursor.fetchone()
-            if result:
-                return decoded_user
-        except jwt.ExpiredSignatureError:
-            request.response.status = 401  # Unauthorized
-    return None
-
-
-# Fungsi untuk membuat token baru dan refresh token
-def create_tokens(user_id):
-    payload = {
-        'sub': user_id,
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
-    }
-    jwt_token = jwt.encode(payload, 'secret', algorithm='HS256')
-
-    return jwt_token
-
-# fungsi endpoint login
-@view_config(route_name='login', renderer='json',  request_method="POST")
-def login(request):
-    auth_user = auth_jwt_verify(request)
-    if auth_user:
-        return {
-            'message': 'error',
-            'description': 'Already logged in'
-        }
-
-    username = request.POST['username']
-    password = request.POST['password']
+# Route untuk halaman edit belanja
+@view_config(route_name='keranjangs', renderer='json')
+def edit_belanja(request):
+    id_belanja = request.matchdict.get('id_belanja')  # Ambil id dari parameter URL
 
     with connection.cursor() as cursor:
-        sql = "SELECT id, username, password FROM users WHERE username=%s AND password=%s"
-        cursor.execute(sql, (username, password))
-        user = cursor.fetchone()
+        # Ambil data film berdasarkan id_belanja
+        sql = "SELECT * FROM keranjangs WHERE id = %s"
+        cursor.execute(sql, (id,))
+        keranjangs = cursor.fetchone()
 
-    if user:
-        jwt_token = create_tokens(user['id'])
+    return {'keranjangs': keranjangs}
+
+#  Route untuk delete data
+@view_config(route_name='delete-data', request_method='DELETE', renderer="json")
+def movie_delete(request):
+    # delete data movies
         with connection.cursor() as cursor:
-            sql = "INSERT INTO tokens (user_id, jwt_token) VALUES (%s, %s)"
-            cursor.execute(sql, (user['id'], jwt_token))
+            sql = "SELECT * FROM product WHERE id=%s"
+            cursor.execute(sql)
+            result = cursor.fetchall()
+            data = {}
+            for item in result:
+                data = {
+                    'id': item['id'],
+                    'nama': item['nama'],
+                    'harga': item['harga'],
+                    'desk': item['desk'],
+                    
+                }
+            sql = "DELETE FROM product WHERE id=%s"
+            cursor.execute(sql, (request.POST['id']))
             connection.commit()
-        request.response.set_cookie(
-            'token', jwt_token, max_age=1800, httponly=True)
+        return {'message': 'ok', 'description': 'hapus data berhasil', 'data': data}
 
-        return {
-            'message': 'ok',
-            'token': jwt_token,
-            'description': 'login success!'
-        }
-    else:
-        return {
-            'message': 'error',
-            'description': 'login failed!'
-        }
-    
-#fungsi endpoint info login
-@view_config(route_name='auth-info', renderer='json', request_method='GET')
-def get_auth_info(request):
-    auth_user = auth_jwt_verify(request)
-    if auth_user:
-        with connection.cursor() as cursor:
-            sql = "SELECT username FROM users WHERE id=%s"
-            cursor.execute(sql, auth_user['sub'])
-            user = cursor.fetchone()
-        return {
-            'message': 'ok',
-            'username': user['username'],
-            'description': 'User is authenticated'
-        }
-    else:
-        return {
-            'message': 'error',
-            'description': 'User is not authenticated'
-        }
 
-# fungsi endpoint register
-@view_config(route_name='registrasi', renderer="json", request_method="POST")
-def register(request):
-    username = request.POST['username']
-    password = request.POST['password']
-    if username == "" or password == "":
-        return {'message': 'error', 'description': 'Username atau password tidak boleh kosong!'}
-    else:
-        with connection.cursor() as cursor:
-            sql = "SELECT username FROM users WHERE username=%s"
-            cursor.execute(sql, (username))
-            user = cursor.fetchone()
-            if user:
-                return {'message': 'error', 'description': 'Username Sudah Terdaftar!'} 
-            else:
-                with connection.cursor() as cursor:
-                    sql = "INSERT INTO users (username, password) VALUES (%s, %s)"
-                    cursor.execute(sql, (username, password))
-                    connection.commit()
-                    if sql:
-                        return {
-                            'message': 'ok',
-                            'username': username,
-                            'description': 'Registrasi Berhasil'
-                        }
-                    else:
-                        return {
-                            'message': 'error',
-                            'description': 'registrasi failed'
-                        }
-            
-# fungsi endpoint logout
-@view_config(route_name='logout', renderer='json', request_method="DELETE")
-def logout(request):
-    auth_user = auth_jwt_verify(request)
-    authentication_header = request.cookies.get('token')
-    if auth_user:
-        with connection.cursor() as cursor:
-            sql = "DELETE FROM tokens WHERE jwt_token=%s"
-            cursor.execute(sql, (authentication_header))
-            connection.commit()
-
-        request.response.delete_cookie('token')
-        return {
-            'message': 'ok',
-            'description': 'Successfully logged out'
-        }
-    return {
-        'message': 'error',
-        'description': 'Token not found'
-    }
-            
+# Konfigurasi Pyramid
 if __name__ == "__main__":
     with Configurator() as config:
-        config = Configurator(settings={'jwt.secret': 'secret'})
-        # konfigurasi endpoint
-        config.add_route('index', '/')
-        config.add_route('registrasi', '/register')
-        config.add_route('login', '/login')
-        config.add_route('auth-info', '/auth-info')
-        config.add_route('logout', '/logout')
+        
+        config.add_static_view(name='static', path='static')
+        config.add_route('product', '/product')
+        config.add_route('keranjangs', '/kerajangs')
+        config.add_route('edit_belanja', '/edit')
+        config.add_route('delete_data', '/delete')
         config.scan()
+        config.set_authorization_policy(ACLAuthorizationPolicy())
+        config.include('pyramid_jwt')
+        config.set_jwt_authentication_policy(config.get_settings()['jwt.secret'])
         app = config.make_wsgi_app()
-        app = CORS(app, headers="*", methods="*", maxage="180", origin="*", expose_headers="*")
+
     # Menjalankan aplikasi pada server lokal
     server = make_server('0.0.0.0', 6543, app)
     server.serve_forever()
